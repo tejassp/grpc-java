@@ -163,7 +163,7 @@ public class TransportBenchmark {
     }
 
     server = serverBuilder
-        .addService(new AsyncServer.BenchmarkServiceImpl())
+        .addService(new AsyncServer.BenchmarkServiceImpl(0))
         .build();
     server.start();
     channel = channelBuilder.build();

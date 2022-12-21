@@ -41,6 +41,7 @@ class ServerConfiguration implements Configuration {
   boolean directExecutor;
   SocketAddress address;
   int flowControlWindow = NettyChannelBuilder.DEFAULT_FLOW_CONTROL_WINDOW;
+  int responseDelay = 0;
 
   private ServerConfiguration() {
   }
@@ -176,6 +177,14 @@ class ServerConfiguration implements Configuration {
       @Override
       protected void setServerValue(ServerConfiguration config, String value) {
         config.flowControlWindow = parseInt(value);
+      }
+    },
+
+    RESPONSE_DELAY("INT", "The artifical delay added to each "
+            + "server response", "0L") {
+      @Override
+      protected void setServerValue(ServerConfiguration config, String value) {
+        config.responseDelay = parseInt(value);
       }
     };
 

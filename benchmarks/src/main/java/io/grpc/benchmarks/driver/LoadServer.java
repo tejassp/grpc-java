@@ -119,7 +119,7 @@ final class LoadServer {
       File key = TestUtils.loadCert("server1.key");
       serverBuilder.useTransportSecurity(cert, key);
     }
-    benchmarkService = new AsyncServer.BenchmarkServiceImpl();
+    benchmarkService = new AsyncServer.BenchmarkServiceImpl(0);
     if (config.getServerType() == Control.ServerType.ASYNC_GENERIC_SERVER) {
       serverBuilder.addService(
           ServerServiceDefinition

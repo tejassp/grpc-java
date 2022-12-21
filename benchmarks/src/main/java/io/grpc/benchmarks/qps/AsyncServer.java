@@ -16,6 +16,13 @@
 
 package io.grpc.benchmarks.qps;
 
+import com.aerospike.client.AerospikeClient;
+import com.aerospike.client.AerospikeException;
+import com.aerospike.client.Key;
+import com.aerospike.client.Record;
+import com.aerospike.client.async.NettyEventLoops;
+import com.aerospike.client.listener.RecordListener;
+import com.aerospike.client.policy.ClientPolicy;
 import com.google.common.util.concurrent.UncaughtExceptionHandlers;
 import com.google.protobuf.ByteString;
 import io.grpc.Server;
@@ -36,10 +43,14 @@ import io.netty.util.concurrent.DefaultThreadFactory;
 import java.io.File;
 import java.io.IOException;
 import java.util.Iterator;
+import java.util.Random;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ForkJoinPool.ForkJoinWorkerThreadFactory;
 import java.util.concurrent.ForkJoinWorkerThread;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
@@ -158,7 +169,7 @@ public class AsyncServer {
         .bossEventLoopGroup(boss)
         .workerEventLoopGroup(worker)
         .channelType(channelType)
-        .addService(new BenchmarkServiceImpl())
+        .addService(new BenchmarkServiceImpl(config.responseDelay))
         .flowControlWindow(config.flowControlWindow);
     if (config.tls) {
       System.out.println("Using fake CA for TLS certificate.\n"
@@ -201,19 +212,63 @@ public class AsyncServer {
         .build();
 
     private final AtomicBoolean shutdown = new AtomicBoolean();
+    private final int responseDelay;
+    private final AerospikeClient aerospikeClient;
+    private final Random random;
 
-    public BenchmarkServiceImpl() {
+    /**
+     * Wow.
+     * @param responseDelay hey.
+     */
+    public BenchmarkServiceImpl(int responseDelay) {
+      this.responseDelay = responseDelay;
+
+      EventLoopGroup eventLoopGroup = new NioEventLoopGroup(4);
+      NettyEventLoops nettyEventLoops = new NettyEventLoops(eventLoopGroup);
+      ClientPolicy clientPolicy = new ClientPolicy();
+      clientPolicy.asyncMaxConnsPerNode = 2048;
+      clientPolicy.eventLoops = nettyEventLoops;
+      aerospikeClient = new AerospikeClient(clientPolicy, "localhost", 3000);
+      random = new Random();
     }
 
     public void shutdown() {
       shutdown.set(true);
     }
 
+    private static final ScheduledExecutorService firstExecutorService =
+            Executors.newScheduledThreadPool(2);
+    private static final ScheduledExecutorService secondExecutorService =
+            Executors.newScheduledThreadPool(2);
+
+
     @Override
     public void unaryCall(Messages.SimpleRequest request,
         StreamObserver<Messages.SimpleResponse> responseObserver) {
-      responseObserver.onNext(Utils.makeResponse(request));
-      responseObserver.onCompleted();
+      if (responseDelay > 0) {
+        firstExecutorService.schedule(() -> secondExecutorService.execute(() -> {
+          responseObserver.onNext(Utils.makeResponse(request));
+          responseObserver.onCompleted();
+        }), responseDelay, TimeUnit.MICROSECONDS);
+      } else if(responseDelay < 0) {
+        Key key = new Key("test", null, random.nextInt());
+        aerospikeClient.get(null, new RecordListener() {
+          @Override
+          public void onSuccess(Key key, Record record) {
+            responseObserver.onNext(Utils.makeResponse(request));
+            responseObserver.onCompleted();
+          }
+
+          @Override
+          public void onFailure(AerospikeException exception) {
+            responseObserver.onNext(Utils.makeResponse(request));
+            responseObserver.onCompleted();
+          }
+        }, null, key);
+      } else {
+        responseObserver.onNext(Utils.makeResponse(request));
+        responseObserver.onCompleted();
+      }
     }
 
     @Override
