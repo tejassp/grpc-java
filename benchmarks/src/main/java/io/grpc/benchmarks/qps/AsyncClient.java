@@ -1,3 +1,4 @@
+
 /*
  * Copyright 2015 The gRPC Authors
  *
@@ -34,7 +35,13 @@ import static io.grpc.benchmarks.qps.ClientConfiguration.ClientParam.TLS;
 import static io.grpc.benchmarks.qps.ClientConfiguration.ClientParam.TRANSPORT;
 import static io.grpc.benchmarks.qps.ClientConfiguration.ClientParam.WARMUP_DURATION;
 
+import com.aerospike.client.Bin;
+import com.aerospike.client.Key;
+import com.aerospike.client.util.Serde;
+import com.aerospike.proxy.client.KVSGrpc;
+import com.aerospike.proxy.client.Kvs;
 import com.google.common.util.concurrent.SettableFuture;
+import com.google.protobuf.ByteOutput;
 import com.google.protobuf.ByteString;
 import io.grpc.Channel;
 import io.grpc.ManagedChannel;
@@ -44,8 +51,12 @@ import io.grpc.benchmarks.proto.Messages.Payload;
 import io.grpc.benchmarks.proto.Messages.SimpleRequest;
 import io.grpc.benchmarks.proto.Messages.SimpleResponse;
 import io.grpc.stub.StreamObserver;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Random;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.HdrHistogram.Histogram;
@@ -57,9 +68,47 @@ import org.HdrHistogram.HistogramIterationValue;
 public class AsyncClient {
 
   private final ClientConfiguration config;
+  private final Kvs.AerospikeRequestPayload[] writeAerospikeRequests =
+          new Kvs.AerospikeRequestPayload[4192];
+  private final Kvs.AerospikeRequestPayload[] readAerospikeRequests =
+          new Kvs.AerospikeRequestPayload[4192];
+  private final Bin aerospikeBin = new Bin("a", "A");
+  private final String aerospikeNamespace = "ssd";
+  private final String aerospikeSet = "proxy";
+  private final Random random = new Random();
 
-  public AsyncClient(ClientConfiguration config) {
+  public AsyncClient(ClientConfiguration config)  {
     this.config = config;
+
+    final Serde serde = new Serde();
+
+    for(int i = 0; i < writeAerospikeRequests.length; i++) {
+      ByteArrayOutputStream baos = new ByteArrayOutputStream(128);
+      Key key = new Key(aerospikeNamespace, aerospikeSet, i);
+      try {
+        serde.writePutPayload(baos, null, key, new Bin[]{aerospikeBin});
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
+      writeAerospikeRequests[i] =
+              Kvs.AerospikeRequestPayload.newBuilder()
+                      .setPayload(ByteString.copyFrom(baos.toByteArray()))
+                      .build();
+    }
+
+    for(int i = 0; i < readAerospikeRequests.length; i++) {
+      ByteArrayOutputStream baos = new ByteArrayOutputStream(128);
+      Key key = new Key(aerospikeNamespace, aerospikeSet, i);
+      try {
+        serde.writeGetPayload(baos, null, key, null);
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
+      readAerospikeRequests[i] =
+              Kvs.AerospikeRequestPayload.newBuilder()
+                      .setPayload(ByteString.copyFrom(baos.toByteArray()))
+                      .build();
+    }
   }
 
   /**
@@ -138,7 +187,8 @@ public class AsyncClient {
   private Future<Histogram> doRpcs(Channel channel, SimpleRequest request, long endTime) {
     switch (config.rpcType) {
       case UNARY:
-        return doUnaryCalls(channel, request, endTime);
+//        return doUnaryCalls(channel, request, endTime);
+      return doAerospikeProxyUnaryCalls(channel, endTime);
       case STREAMING:
         return doStreamingCalls(channel, request, endTime);
       default:
@@ -173,6 +223,43 @@ public class AsyncClient {
 
         if (endTime - now > 0) {
           stub.unaryCall(request, this);
+        } else {
+          future.set(histogram);
+        }
+      }
+    });
+
+    return future;
+  }
+
+  private Future<Histogram> doAerospikeProxyUnaryCalls(Channel channel, final long endTime) {
+    final KVSGrpc.KVSStub stub = KVSGrpc.newStub(channel);
+    final Histogram histogram = new Histogram(HISTOGRAM_MAX_VALUE, HISTOGRAM_PRECISION);
+    final SettableFuture<Histogram> future = SettableFuture.create();
+
+    Kvs.AerospikeRequestPayload writeRequest = writeAerospikeRequests[random.nextInt(writeAerospikeRequests.length)];
+    stub.put(writeRequest, new StreamObserver<Kvs.AerospikeResponsePayload>() {
+      long lastCall = System.nanoTime();
+
+      @Override
+      public void onNext(Kvs.AerospikeResponsePayload value) {
+
+      }
+
+      @Override
+      public void onError(Throwable t) {
+        future.setException(new RuntimeException("Encountered an error in unaryCall", t));
+      }
+
+      @Override
+      public void onCompleted() {
+        long now = System.nanoTime();
+        // Record the latencies in microseconds
+        histogram.recordValue((now - lastCall) / 1000);
+        lastCall = now;
+
+        if (endTime - now > 0) {
+          stub.put(writeRequest, this);
         } else {
           future.set(histogram);
         }

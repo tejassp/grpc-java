@@ -20,7 +20,10 @@ configurations {
 
 dependencies {
     implementation project(':grpc-core'),
-    implementation ('com.aerospike:aerospike-client:6.1.5'),
+    implementation ('com.aerospike:aerospike-client:6.1.4-proxy-SNAPSHOT'),
+    implementation ('com.aerospike:aerospike-proxy-client:6.1.4-proxy-SNAPSHOT'),
+    implementation ('com.aerospike:aerospike-proxy-stub:0.1.0'),
+
     implementation ('io.netty:netty-all:4.1.86.Final'),
 
             project(':grpc-netty'),
