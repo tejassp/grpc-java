@@ -37,6 +37,7 @@ import static io.grpc.benchmarks.qps.ClientConfiguration.ClientParam.WARMUP_DURA
 
 import com.aerospike.client.Bin;
 import com.aerospike.client.Key;
+import com.aerospike.client.policy.WritePolicy;
 import com.aerospike.client.util.Serde;
 import com.aerospike.proxy.client.KVSGrpc;
 import com.aerospike.proxy.client.Kvs;
@@ -82,11 +83,12 @@ public class AsyncClient {
 
     final Serde serde = new Serde();
 
+    WritePolicy writePolicy = new WritePolicy();
     for(int i = 0; i < writeAerospikeRequests.length; i++) {
       ByteArrayOutputStream baos = new ByteArrayOutputStream(128);
       Key key = new Key(aerospikeNamespace, aerospikeSet, i);
       try {
-        serde.writePutPayload(baos, null, key, new Bin[]{aerospikeBin});
+        serde.writePutPayload(baos, writePolicy, key, new Bin[]{aerospikeBin});
       } catch (IOException e) {
         throw new RuntimeException(e);
       }
@@ -100,7 +102,7 @@ public class AsyncClient {
       ByteArrayOutputStream baos = new ByteArrayOutputStream(128);
       Key key = new Key(aerospikeNamespace, aerospikeSet, i);
       try {
-        serde.writeGetPayload(baos, null, key, null);
+        serde.writeGetPayload(baos, writePolicy, key, null);
       } catch (IOException e) {
         throw new RuntimeException(e);
       }
