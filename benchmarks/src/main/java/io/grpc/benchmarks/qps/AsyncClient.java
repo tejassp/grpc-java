@@ -35,9 +35,14 @@ import static io.grpc.benchmarks.qps.ClientConfiguration.ClientParam.TLS;
 import static io.grpc.benchmarks.qps.ClientConfiguration.ClientParam.TRANSPORT;
 import static io.grpc.benchmarks.qps.ClientConfiguration.ClientParam.WARMUP_DURATION;
 
+import com.aerospike.client.AerospikeException;
 import com.aerospike.client.Bin;
+import com.aerospike.client.Host;
 import com.aerospike.client.Key;
+import com.aerospike.client.listener.WriteListener;
+import com.aerospike.client.policy.ClientPolicy;
 import com.aerospike.client.policy.WritePolicy;
+import com.aerospike.client.proxy.AerospikeClientProxy;
 import com.aerospike.client.util.Serde;
 import com.aerospike.proxy.client.KVSGrpc;
 import com.aerospike.proxy.client.Kvs;
@@ -102,6 +107,7 @@ public class AsyncClient {
       ByteArrayOutputStream baos = new ByteArrayOutputStream(128);
       Key key = new Key(aerospikeNamespace, aerospikeSet, i);
       try {
+
         serde.writeGetPayload(baos, writePolicy, key, null);
       } catch (IOException e) {
         throw new RuntimeException(e);
@@ -190,7 +196,11 @@ public class AsyncClient {
     switch (config.rpcType) {
       case UNARY:
 //        return doUnaryCalls(channel, request, endTime);
-      return doAerospikeProxyUnaryCalls(channel, endTime);
+        AerospikeClientProxy proxy =
+                new AerospikeClientProxy(new ClientPolicy(),
+                        new Host("172.31.12.130", 4000));
+        return doAerospikeProxyUnaryCalls(proxy, endTime);
+//      return doAerospikeProxyUnaryCalls(channel, endTime);
       case STREAMING:
         return doStreamingCalls(channel, request, endTime);
       default:
@@ -267,6 +277,44 @@ public class AsyncClient {
         }
       }
     });
+
+    return future;
+  }
+
+  private Future<Histogram> doAerospikeProxyUnaryCalls(AerospikeClientProxy proxy,
+                                                       final long endTime) {
+    final Histogram histogram = new Histogram(HISTOGRAM_MAX_VALUE, HISTOGRAM_PRECISION);
+    final SettableFuture<Histogram> future = SettableFuture.create();
+
+    Key key = new Key(aerospikeNamespace, aerospikeSet,
+            random.nextInt(10_000_000));
+    proxy.put(null, new WriteListener() {
+      long lastCall = System.nanoTime();
+
+      @Override
+      public void onSuccess(Key key) {
+        onCompleted();
+      }
+
+      @Override
+      public void onFailure(AerospikeException e) {
+        onCompleted();
+      }
+
+      private void onCompleted() {
+        long now = System.nanoTime();
+        // Record the latencies in microseconds
+        histogram.recordValue((now - lastCall) / 1000);
+        lastCall = now;
+
+        if (endTime - now > 0) {
+          proxy.put(null, this, new WritePolicy(), key, aerospikeBin);
+        } else {
+          future.set(histogram);
+        }
+      }
+    }, new WritePolicy(), key, aerospikeBin);
+
 
     return future;
   }
