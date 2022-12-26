@@ -18,10 +18,12 @@ package io.grpc.benchmarks.qps;
 
 import com.aerospike.client.AerospikeClient;
 import com.aerospike.client.AerospikeException;
+import com.aerospike.client.Bin;
 import com.aerospike.client.Key;
 import com.aerospike.client.Record;
 import com.aerospike.client.async.NettyEventLoops;
 import com.aerospike.client.listener.RecordListener;
+import com.aerospike.client.listener.WriteListener;
 import com.aerospike.client.policy.ClientPolicy;
 import com.google.common.util.concurrent.UncaughtExceptionHandlers;
 import com.google.protobuf.ByteString;
@@ -215,6 +217,9 @@ public class AsyncServer {
     private final int responseDelay;
     private final AerospikeClient aerospikeClient;
     private final Random random;
+    private final Bin stringBin = new Bin("a", "a");
+    private final int[] writeCounts = new int[1024];
+    private final long[] logTime = new long[1024];
 
     /**
      * Wow.
@@ -223,12 +228,12 @@ public class AsyncServer {
     public BenchmarkServiceImpl(int responseDelay) {
       this.responseDelay = responseDelay;
 
-      EventLoopGroup eventLoopGroup = new NioEventLoopGroup(4);
+      EventLoopGroup eventLoopGroup = new NioEventLoopGroup(8);
       NettyEventLoops nettyEventLoops = new NettyEventLoops(eventLoopGroup);
       ClientPolicy clientPolicy = new ClientPolicy();
-      clientPolicy.asyncMaxConnsPerNode = 2048;
+      clientPolicy.asyncMaxConnsPerNode = 8192;
       clientPolicy.eventLoops = nettyEventLoops;
-      aerospikeClient = new AerospikeClient(clientPolicy, "localhost", 3000);
+      aerospikeClient = new AerospikeClient(clientPolicy, "172.31.33.224", 3000);
       random = new Random();
     }
 
@@ -251,25 +256,43 @@ public class AsyncServer {
           responseObserver.onCompleted();
         }), responseDelay, TimeUnit.MICROSECONDS);
       } else if(responseDelay < 0) {
-        Key key = new Key("test", null, random.nextInt());
-        aerospikeClient.get(null, new RecordListener() {
-          @Override
-          public void onSuccess(Key key, Record record) {
-            responseObserver.onNext(Utils.makeResponse(request));
-            responseObserver.onCompleted();
-          }
+        Key key = new Key("ssd", null, random.nextInt(100_000_000));
+	if(true || random.nextBoolean()) {
+          aerospikeClient.put(null, new WriteListener() {
+            @Override
+            public void onSuccess(Key key) {
+              responseObserver.onNext(Utils.makeResponse(request));
+              responseObserver.onCompleted();
+            }
 
-          @Override
-          public void onFailure(AerospikeException exception) {
-            responseObserver.onNext(Utils.makeResponse(request));
-            responseObserver.onCompleted();
-          }
-        }, null, key);
+            @Override
+            public void onFailure(AerospikeException exception) {
+              responseObserver.onNext(Utils.makeResponse(request));
+              responseObserver.onCompleted();
+            }
+          }, null, key, stringBin);
+        } else {
+          aerospikeClient.get(null, new RecordListener() {
+            @Override
+            public void onSuccess(Key key, Record record) {
+              responseObserver.onNext(Utils.makeResponse(request));
+              responseObserver.onCompleted();
+            }
+
+            @Override
+            public void onFailure(AerospikeException exception) {
+              responseObserver.onNext(Utils.makeResponse(request));
+              responseObserver.onCompleted();
+            }
+          }, null, key);
+        }
       } else {
         responseObserver.onNext(Utils.makeResponse(request));
         responseObserver.onCompleted();
       }
     }
+
+
 
     @Override
     public StreamObserver<Messages.SimpleRequest> streamingCall(
@@ -284,7 +307,42 @@ public class AsyncServer {
             responseObserver.onCompleted();
             return;
           }
-          responseObserver.onNext(Utils.makeResponse(value));
+		Key key = new Key("ssd", null, random.nextInt(100_000_000));
+		if(random.nextBoolean()) {
+		  aerospikeClient.put(null, new WriteListener() {
+		    @Override
+		    public void onSuccess(Key key) {
+			int i = (int)Thread.currentThread().getId();
+			int v = writeCounts[i]++;
+			if(v % 100_000 == 0) {
+				log.info("thread " + i + " at " + v);
+			}
+		      responseObserver.onNext(Utils.makeResponse(value));
+		    }
+
+		    @Override
+		    public void onFailure(AerospikeException exception) {
+			int i = (int)Thread.currentThread().getId();
+			int v = writeCounts[i]++;
+			if(v % 100_000 == 0) {
+				log.info("thread " + i + " at " + v);
+			}
+		      responseObserver.onNext(Utils.makeResponse(value));
+		    }
+		  }, null, key, stringBin);
+		} else {
+		  aerospikeClient.get(null, new RecordListener() {
+		    @Override
+		    public void onSuccess(Key key, Record record) {
+		      responseObserver.onNext(Utils.makeResponse(value));
+		    }
+
+		    @Override
+		    public void onFailure(AerospikeException exception) {
+		      responseObserver.onNext(Utils.makeResponse(value));
+		    }
+		  }, null, key);
+		 }
         }
 
         @Override
