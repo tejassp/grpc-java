@@ -17,6 +17,42 @@
 
 package io.grpc.benchmarks.qps;
 
+import com.aerospike.client.AerospikeException;
+import com.aerospike.client.Bin;
+import com.aerospike.client.Host;
+import com.aerospike.client.Key;
+import com.aerospike.client.listener.WriteListener;
+import com.aerospike.client.policy.ClientPolicy;
+import com.aerospike.client.policy.WritePolicy;
+import com.aerospike.client.proxy.AerospikeClientProxy;
+import com.aerospike.client.proxy.auth.AuthTokenManager;
+import com.aerospike.client.proxy.grpc.GrpcCallExecutor;
+import com.aerospike.client.proxy.grpc.GrpcChannelProvider;
+import com.aerospike.client.proxy.grpc.GrpcStreamingUnaryCall;
+import com.aerospike.client.util.Serde;
+import com.aerospike.proxy.client.KVSGrpc;
+import com.aerospike.proxy.client.Kvs;
+import com.google.common.util.concurrent.SettableFuture;
+import com.google.protobuf.ByteString;
+import io.grpc.Channel;
+import io.grpc.ManagedChannel;
+import io.grpc.benchmarks.proto.BenchmarkServiceGrpc;
+import io.grpc.benchmarks.proto.BenchmarkServiceGrpc.BenchmarkServiceStub;
+import io.grpc.benchmarks.proto.Messages.Payload;
+import io.grpc.benchmarks.proto.Messages.SimpleRequest;
+import io.grpc.benchmarks.proto.Messages.SimpleResponse;
+import io.grpc.stub.StreamObserver;
+import org.HdrHistogram.Histogram;
+import org.HdrHistogram.HistogramIterationValue;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
 import static io.grpc.benchmarks.Utils.HISTOGRAM_MAX_VALUE;
 import static io.grpc.benchmarks.Utils.HISTOGRAM_PRECISION;
 import static io.grpc.benchmarks.Utils.saveHistogram;
@@ -34,43 +70,6 @@ import static io.grpc.benchmarks.qps.ClientConfiguration.ClientParam.TESTCA;
 import static io.grpc.benchmarks.qps.ClientConfiguration.ClientParam.TLS;
 import static io.grpc.benchmarks.qps.ClientConfiguration.ClientParam.TRANSPORT;
 import static io.grpc.benchmarks.qps.ClientConfiguration.ClientParam.WARMUP_DURATION;
-
-import com.aerospike.client.AerospikeException;
-import com.aerospike.client.Bin;
-import com.aerospike.client.Host;
-import com.aerospike.client.Key;
-import com.aerospike.client.listener.WriteListener;
-import com.aerospike.client.policy.ClientPolicy;
-import com.aerospike.client.policy.WritePolicy;
-import com.aerospike.client.proxy.AerospikeClientProxy;
-import com.aerospike.client.proxy.auth.AuthTokenManager;
-import com.aerospike.client.proxy.grpc.GrpcCallExecutor;
-import com.aerospike.client.proxy.grpc.GrpcChannelProvider;
-import com.aerospike.client.proxy.grpc.GrpcStreamingUnaryCall;
-import com.aerospike.client.util.Serde;
-import com.aerospike.proxy.client.KVSGrpc;
-import com.aerospike.proxy.client.Kvs;
-import com.google.common.util.concurrent.SettableFuture;
-import com.google.protobuf.ByteOutput;
-import com.google.protobuf.ByteString;
-import io.grpc.Channel;
-import io.grpc.ManagedChannel;
-import io.grpc.benchmarks.proto.BenchmarkServiceGrpc;
-import io.grpc.benchmarks.proto.BenchmarkServiceGrpc.BenchmarkServiceStub;
-import io.grpc.benchmarks.proto.Messages.Payload;
-import io.grpc.benchmarks.proto.Messages.SimpleRequest;
-import io.grpc.benchmarks.proto.Messages.SimpleResponse;
-import io.grpc.stub.StreamObserver;
-
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Random;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import org.HdrHistogram.Histogram;
-import org.HdrHistogram.HistogramIterationValue;
 
 /**
  * QPS Client using the non-blocking API.
@@ -215,10 +214,11 @@ public class AsyncClient {
       case UNARY:
 //        return doUnaryCalls(channel, request, endTime);
 //        return doAerospikeProxyUnaryCalls(proxy, endTime);
-//      return doAerospikeProxyUnaryCalls(channel, endTime);
-        return doStreamingAerospikeProxyUnaryCalls(endTime);
+      return doAerospikeProxyUnaryCalls(channel, endTime);
+//        return doStreamingAerospikeProxyUnaryCalls(endTime);
       case STREAMING:
-        return doStreamingCalls(channel, request, endTime);
+        return doStreamingAerospikeProxyCalls(channel, endTime);
+//        return doStreamingCalls(channel, request, endTime);
       default:
         throw new IllegalStateException("unsupported rpc type");
     }
@@ -259,6 +259,72 @@ public class AsyncClient {
 
     return future;
   }
+
+  private Future<Histogram> doStreamingAerospikeProxyCalls(Channel channel, final long endTime) {
+    final KVSGrpc.KVSStub stub = KVSGrpc.newStub(channel);
+    final Histogram histogram = new Histogram(HISTOGRAM_MAX_VALUE, HISTOGRAM_PRECISION);
+    final SettableFuture<Histogram> future = SettableFuture.create();
+
+    Kvs.AerospikeRequestPayload writeRequest =
+            writeAerospikeRequests[random.nextInt(writeAerospikeRequests.length)];
+
+    AerospikeHackStreamObserver responseObserver =
+            new AerospikeHackStreamObserver(writeRequest, histogram, future, endTime);
+
+    StreamObserver<Kvs.AerospikeRequestPayload> requestObserver =
+            stub.putStreaming(responseObserver);
+    responseObserver.requestObserver = requestObserver;
+    requestObserver.onNext(writeRequest);
+    return future;
+  }
+
+  private static class AerospikeHackStreamObserver implements StreamObserver<Kvs.AerospikeResponsePayload> {
+
+    final Kvs.AerospikeRequestPayload request;
+    final Histogram histogram;
+    final SettableFuture<Histogram> future;
+    final long endTime;
+    long lastCall = System.nanoTime();
+
+    StreamObserver<Kvs.AerospikeRequestPayload> requestObserver;
+
+    AerospikeHackStreamObserver(Kvs.AerospikeRequestPayload request,
+                              Histogram histogram,
+                              SettableFuture<Histogram> future,
+                              long endTime) {
+      this.request = request;
+      this.histogram = histogram;
+      this.future = future;
+      this.endTime = endTime;
+    }
+
+    @Override
+    public void onNext(Kvs.AerospikeResponsePayload value) {
+      long now = System.nanoTime();
+      // Record the latencies in microseconds
+      histogram.recordValue((now - lastCall) / 1000);
+      lastCall = now;
+
+      if (endTime - now > 0) {
+        requestObserver.onNext(request);
+      } else {
+        requestObserver.onCompleted();
+      }
+    }
+
+    @Override
+    public void onError(Throwable t) {
+      future.setException(new RuntimeException("Encountered an error in streamingCall", t));
+    }
+
+    @Override
+    public void onCompleted() {
+      future.set(histogram);
+    }
+  }
+
+
+
   private Future<Histogram> doStreamingAerospikeProxyUnaryCalls(final long endTime) {
     final Histogram histogram = new Histogram(HISTOGRAM_MAX_VALUE, HISTOGRAM_PRECISION);
     final SettableFuture<Histogram> future = SettableFuture.create();
