@@ -167,6 +167,7 @@ public class AsyncClient {
       saveHistogram(merged, config.histogramFile);
     }
     shutdown(channels);
+    grpcCallExecutor.close();
   }
 
   private SimpleRequest newRequest() {
