@@ -298,7 +298,8 @@ public class AsyncClient {
 
       @Override
       public void onFailure(AerospikeException e) {
-        onCompleted();
+        future.setException(new RuntimeException("Encountered an error in " +
+                "unaryCall", e));
       }
 
       private void onCompleted() {
