@@ -82,6 +82,9 @@ public class AsyncClient {
   private final String aerospikeNamespace = "ssd";
   private final String aerospikeSet = "proxy";
   private final Random random = new Random();
+  private final AerospikeClientProxy proxy =
+          new AerospikeClientProxy(new ClientPolicy(),
+                  new Host("172.31.12.130", 4000));
 
   public AsyncClient(ClientConfiguration config)  {
     this.config = config;
@@ -196,9 +199,6 @@ public class AsyncClient {
     switch (config.rpcType) {
       case UNARY:
 //        return doUnaryCalls(channel, request, endTime);
-        AerospikeClientProxy proxy =
-                new AerospikeClientProxy(new ClientPolicy(),
-                        new Host("172.31.12.130", 4000));
         return doAerospikeProxyUnaryCalls(proxy, endTime);
 //      return doAerospikeProxyUnaryCalls(channel, endTime);
       case STREAMING:
@@ -293,16 +293,6 @@ public class AsyncClient {
 
       @Override
       public void onSuccess(Key key) {
-        onCompleted();
-      }
-
-      @Override
-      public void onFailure(AerospikeException e) {
-        future.setException(new RuntimeException("Encountered an error in " +
-                "unaryCall", e));
-      }
-
-      private void onCompleted() {
         long now = System.nanoTime();
         // Record the latencies in microseconds
         histogram.recordValue((now - lastCall) / 1000);
@@ -313,6 +303,12 @@ public class AsyncClient {
         } else {
           future.set(histogram);
         }
+      }
+
+      @Override
+      public void onFailure(AerospikeException e) {
+        future.setException(new RuntimeException("Encountered an error in " +
+                "unaryCall", e));
       }
     }, new WritePolicy(), key, aerospikeBin);
 
