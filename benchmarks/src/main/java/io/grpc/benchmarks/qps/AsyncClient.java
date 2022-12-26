@@ -43,6 +43,10 @@ import com.aerospike.client.listener.WriteListener;
 import com.aerospike.client.policy.ClientPolicy;
 import com.aerospike.client.policy.WritePolicy;
 import com.aerospike.client.proxy.AerospikeClientProxy;
+import com.aerospike.client.proxy.auth.AuthTokenManager;
+import com.aerospike.client.proxy.grpc.GrpcCallExecutor;
+import com.aerospike.client.proxy.grpc.GrpcChannelProvider;
+import com.aerospike.client.proxy.grpc.GrpcStreamingUnaryCall;
 import com.aerospike.client.util.Serde;
 import com.aerospike.proxy.client.KVSGrpc;
 import com.aerospike.proxy.client.Kvs;
@@ -82,17 +86,19 @@ public class AsyncClient {
   private final String aerospikeNamespace = "ssd";
   private final String aerospikeSet = "proxy";
   private final Random random = new Random();
-  private final AerospikeClientProxy proxy =
-          new AerospikeClientProxy(new ClientPolicy(),
-                  new Host("172.31.12.130", 4000));
+  private final Host host = new Host("172.31.12.130", 4000);
+//  private final AerospikeClientProxy proxy =
+//          new AerospikeClientProxy(new ClientPolicy(),host);
 
-  public AsyncClient(ClientConfiguration config)  {
+  private GrpcCallExecutor grpcCallExecutor;
+
+  public AsyncClient(ClientConfiguration config) {
     this.config = config;
 
     final Serde serde = new Serde();
 
     WritePolicy writePolicy = new WritePolicy();
-    for(int i = 0; i < writeAerospikeRequests.length; i++) {
+    for (int i = 0; i < writeAerospikeRequests.length; i++) {
       ByteArrayOutputStream baos = new ByteArrayOutputStream(128);
       Key key = new Key(aerospikeNamespace, aerospikeSet, i);
       try {
@@ -106,7 +112,7 @@ public class AsyncClient {
                       .build();
     }
 
-    for(int i = 0; i < readAerospikeRequests.length; i++) {
+    for (int i = 0; i < readAerospikeRequests.length; i++) {
       ByteArrayOutputStream baos = new ByteArrayOutputStream(128);
       Key key = new Key(aerospikeNamespace, aerospikeSet, i);
       try {
@@ -120,6 +126,15 @@ public class AsyncClient {
                       .setPayload(ByteString.copyFrom(baos.toByteArray()))
                       .build();
     }
+
+
+    GrpcChannelProvider channelProvider = new GrpcChannelProvider();
+    AuthTokenManager authTokenManager = new AuthTokenManager(new ClientPolicy(),
+            channelProvider);
+    grpcCallExecutor = new GrpcCallExecutor(config.channels,
+            config.outstandingRpcsPerChannel, 10000, authTokenManager, null,
+            host);
+    channelProvider.setCallExecutor(grpcCallExecutor);
   }
 
   /**
@@ -199,8 +214,9 @@ public class AsyncClient {
     switch (config.rpcType) {
       case UNARY:
 //        return doUnaryCalls(channel, request, endTime);
-        return doAerospikeProxyUnaryCalls(proxy, endTime);
+//        return doAerospikeProxyUnaryCalls(proxy, endTime);
 //      return doAerospikeProxyUnaryCalls(channel, endTime);
+        return doStreamingAerospikeProxyUnaryCalls(endTime);
       case STREAMING:
         return doStreamingCalls(channel, request, endTime);
       default:
@@ -240,6 +256,43 @@ public class AsyncClient {
         }
       }
     });
+
+    return future;
+  }
+  private Future<Histogram> doStreamingAerospikeProxyUnaryCalls(final long endTime) {
+    final Histogram histogram = new Histogram(HISTOGRAM_MAX_VALUE, HISTOGRAM_PRECISION);
+    final SettableFuture<Histogram> future = SettableFuture.create();
+
+    byte[] writeRequest =
+            writeAerospikeRequests[random.nextInt(writeAerospikeRequests.length)].getPayload().toByteArray();
+    grpcCallExecutor.enqueue(new GrpcStreamingUnaryCall(KVSGrpc.getPutStreamingMethod(),
+            writeRequest,1000,
+            new StreamObserver<Kvs.AerospikeResponsePayload>() {
+              long lastCall = System.nanoTime();
+      @Override
+      public void onNext(Kvs.AerospikeResponsePayload value) {
+      }
+
+      @Override
+      public void onError(Throwable t) {
+        future.setException(new RuntimeException("Encountered an error in unaryCall", t));
+      }
+
+      @Override
+      public void onCompleted() {
+        long now = System.nanoTime();
+        // Record the latencies in microseconds
+        histogram.recordValue((now - lastCall) / 1000);
+        lastCall = now;
+
+        if (endTime - now > 0) {
+          grpcCallExecutor.enqueue(new GrpcStreamingUnaryCall(KVSGrpc.getPutStreamingMethod(),
+                  writeRequest,1000, this));
+        } else {
+          future.set(histogram);
+        }
+      }
+    }));
 
     return future;
   }
