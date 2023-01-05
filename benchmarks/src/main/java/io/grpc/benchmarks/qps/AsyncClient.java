@@ -104,37 +104,37 @@ public class AsyncClient {
   public AsyncClient(ClientConfiguration config) {
     this.config = config;
 
-//    final Serde serde = new Serde();
+    final Serde serde = new Serde();
 
-//    WritePolicy writePolicy = new WritePolicy();
-//    for (int i = 0; i < writeAerospikeRequests.length; i++) {
-//      ByteArrayOutputStream baos = new ByteArrayOutputStream(128);
-//      Key key = new Key(aerospikeNamespace, aerospikeSet, i);
-//      try {
-//        serde.writePutPayload(baos, writePolicy, key, new Bin[]{aerospikeBin});
-//      } catch (IOException e) {
-//        throw new RuntimeException(e);
-//      }
-//      writeAerospikeRequests[i] =
-//              Kvs.AerospikeRequestPayload.newBuilder()
-//                      .setPayload(ByteString.copyFrom(baos.toByteArray()))
-//                      .build();
-//    }
-//
-//    for (int i = 0; i < readAerospikeRequests.length; i++) {
-//      ByteArrayOutputStream baos = new ByteArrayOutputStream(128);
-//      Key key = new Key(aerospikeNamespace, aerospikeSet, i);
-//      try {
-//
-//        serde.writeGetPayload(baos, writePolicy, key, null);
-//      } catch (IOException e) {
-//        throw new RuntimeException(e);
-//      }
-//      readAerospikeRequests[i] =
-//              Kvs.AerospikeRequestPayload.newBuilder()
-//                      .setPayload(ByteString.copyFrom(baos.toByteArray()))
-//                      .build();
-//    }
+    WritePolicy writePolicy = new WritePolicy();
+    for (int i = 0; i < writeAerospikeRequests.length; i++) {
+      ByteArrayOutputStream baos = new ByteArrayOutputStream(128);
+      Key key = new Key(aerospikeNamespace, aerospikeSet, i);
+      try {
+        serde.writePutPayload(baos, writePolicy, key, new Bin[]{aerospikeBin});
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
+      writeAerospikeRequests[i] =
+              Kvs.AerospikeRequestPayload.newBuilder()
+                      .setPayload(ByteString.copyFrom(baos.toByteArray()))
+                      .build();
+    }
+
+    for (int i = 0; i < readAerospikeRequests.length; i++) {
+      ByteArrayOutputStream baos = new ByteArrayOutputStream(128);
+      Key key = new Key(aerospikeNamespace, aerospikeSet, i);
+      try {
+
+        serde.writeGetPayload(baos, writePolicy, key, null);
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
+      readAerospikeRequests[i] =
+              Kvs.AerospikeRequestPayload.newBuilder()
+                      .setPayload(ByteString.copyFrom(baos.toByteArray()))
+                      .build();
+    }
 
 
     GrpcChannelProvider channelProvider = new GrpcChannelProvider();
@@ -248,7 +248,7 @@ public class AsyncClient {
   private Future<Histogram> doRpcs(Channel channel, SimpleRequest request, long endTime) {
     switch (config.rpcType) {
       case UNARY:
-        return doUnaryCalls(channel, request, endTime);
+//        return doUnaryCalls(channel, request, endTime);
 //        return doAerospikeProxyUnaryCalls(proxy, endTime);
 //      return doAerospikeProxyUnaryCalls(channel, endTime);
         return doStreamingAerospikeProxyUnaryCalls(endTime);
