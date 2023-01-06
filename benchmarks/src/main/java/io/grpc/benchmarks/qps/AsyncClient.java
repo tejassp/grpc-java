@@ -59,6 +59,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -100,6 +101,10 @@ public class AsyncClient {
 //          new AerospikeClientProxy(new ClientPolicy(),host);
 
   private IGrpcCallExecutor grpcCallExecutor;
+  private final ExecutorService callExecutorService =
+          Executors.newFixedThreadPool(2);
+  private final Boolean useMpsc =
+          Boolean.valueOf(System.getProperty("com.aerospike.mpsc", "false"));
 
   public AsyncClient(ClientConfiguration config) {
     this.config = config;
@@ -141,32 +146,30 @@ public class AsyncClient {
     AuthTokenManager authTokenManager = new AuthTokenManager(new ClientPolicy(),
             channelProvider);
 
-    grpcCallExecutor = new GrpcCallExecutor(config.channels,
-            config.outstandingRpcsPerChannel, 10000, authTokenManager, null,
-            host);
-
-//     final Executor callExecutorService =
-//            Executors.newFixedThreadPool(2);
-//
-//    // Total in flight requests = maxConnections x maxConcurrentStreams x maxConcurrentRequestsPerStream
-//     final int maxConcurrentStreams = 100;
-//     final int totalRequestsPerStream = 100;
-//     final int maxConcurrentRequestsPerStream = 10;
-//     final StreamSelector streamSelector =
-//            new DefaultStreamSelector(maxConcurrentStreams,
-//                    maxConcurrentRequestsPerStream,
-//                    totalRequestsPerStream);
-//     final int requestsLowWaterMark = 80;
-//     final int requestsHighWaterMark = maxConcurrentStreams * totalRequestsPerStream;
-//     final ChannelSelector channelSelector =
-//            new DefaultChannelSelector(requestsLowWaterMark,
-//                    requestsHighWaterMark);
-//    grpcCallExecutor = new CallExecutor(callExecutorService,
-//            8, maxConcurrentStreams,
-//            maxConcurrentRequestsPerStream, totalRequestsPerStream,
-//            streamSelector, 10000, authTokenManager,
-//            channelSelector, null, host);
-
+    if (useMpsc) {
+      grpcCallExecutor = new GrpcCallExecutor(config.channels,
+              config.outstandingRpcsPerChannel, 10000, authTokenManager, null,
+              host);
+    } else {
+      // Total in flight requests = maxConnections x maxConcurrentStreams x maxConcurrentRequestsPerStream
+      final int maxConcurrentStreams = 100;
+      final int totalRequestsPerStream = 100;
+      final int maxConcurrentRequestsPerStream = 1;
+      final StreamSelector streamSelector =
+              new DefaultStreamSelector(maxConcurrentStreams,
+                      maxConcurrentRequestsPerStream,
+                      totalRequestsPerStream);
+      final int requestsLowWaterMark = 80;
+      final int requestsHighWaterMark = maxConcurrentStreams * totalRequestsPerStream;
+      final ChannelSelector channelSelector =
+              new DefaultChannelSelector(requestsLowWaterMark,
+                      requestsHighWaterMark);
+      grpcCallExecutor = new CallExecutor(callExecutorService,
+              config.channels, maxConcurrentStreams,
+              maxConcurrentRequestsPerStream, totalRequestsPerStream,
+              streamSelector, 10000, authTokenManager,
+              channelSelector, null, host);
+    }
 
     channelProvider.setCallExecutor(grpcCallExecutor);
   }
@@ -202,7 +205,14 @@ public class AsyncClient {
       saveHistogram(merged, config.histogramFile);
     }
     shutdown(channels);
+
     if(grpcCallExecutor != null) grpcCallExecutor.close();
+
+    callExecutorService.shutdownNow();
+    if(!callExecutorService.awaitTermination(10,
+            TimeUnit.SECONDS)) {
+      System.out.println("Failed to terminated executor service");
+    }
   }
 
   private SimpleRequest newRequest() {
